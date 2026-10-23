@@ -463,4 +463,4 @@ if st.button("Generate Experimental Bench SOP", type="primary"):
     """)
 
     if has_carb:
-        st.warning("⚠️ **Alkaline-Earth Carbonate Warning (Ba/Sr Present):** Citric acid pyrolysis generates $\\text{CO}_2$, which forms ultra-stable $\\text{BaCO}_3$ / $\\text{SrCO}_3$. Sintering at $\ge 1150^\\circ\\text{C}$ with an intermediate milling step after $500^\\circ\\text{C}$ is strictly required to force complete reaction into the perovskite structure!")ontium System):** Alkaline-earth cations readily react with decomposing citrate fuels to form ultra-stable $\\text{BaCO}_3$ / $\\text{SrCO}_3$. Sintering at $>1150^\\circ\\text{C}$ or performing an intermediate milling step is strictly required to force solid-state reaction with B-site oxides!")
+        st.warning("⚠️ **Alkaline-Earth Carbonate Warning (Ba/Sr Present):** Citric acid pyrolysis generates $\\text{CO}_2$, which forms ultra-stable $\\text{BaCO}_3$ / $\\text{SrCO}_3$. Sintering at $\\ge 1150^\\circ\\text{C}$ with an intermediate milling step after $500^\\circ\\text{C}$ is strictly required to force complete reaction into the perovskite structure!")
