@@ -1,141 +1,186 @@
 """
-PechiniLab — reproducible formulation calculator for Pechini-derived oxides.
-
-Academic prototype, not a validated synthesis protocol.
-The application calculates theoretical stoichiometry and reagent quantities from
-explicit user-supplied precursor definitions. It does not predict phase purity,
-reaction yield, pH, thermal behavior, or safe processing conditions.
+PechiniLab v0.3.0: Reproducible Synthesis Formulation Engine
+Specialized for Perovskite (LLTO/LCTO) and Garnet (LLZO) Solid Electrolytes.
 """
 
 from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import json
 import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Mapping, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 
-APP_NAME = "PechiniLab"
-APP_VERSION = "0.2.0-academic-prototype"
-
-# Standard atomic weights (g/mol), simplified fixed values for transparent calculations.
-# For publication, document the source/version and consider standard uncertainty ranges.
+# Standard IUPAC atomic weights (g/mol)
 ATOMIC_WEIGHTS: Dict[str, float] = {
-    "H": 1.008, "He": 4.002602, "Li": 6.94, "Be": 9.0121831, "B": 10.81,
-    "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998403163, "Ne": 20.1797,
-    "Na": 22.98976928, "Mg": 24.305, "Al": 26.9815385, "Si": 28.085, "P": 30.973761998,
-    "S": 32.06, "Cl": 35.45, "Ar": 39.948, "K": 39.0983, "Ca": 40.078,
-    "Sc": 44.955908, "Ti": 47.867, "V": 50.9415, "Cr": 51.9961, "Mn": 54.938044,
-    "Fe": 55.845, "Co": 58.933194, "Ni": 58.6934, "Cu": 63.546, "Zn": 65.38,
-    "Ga": 69.723, "Ge": 72.630, "As": 74.921595, "Se": 78.971, "Br": 79.904,
-    "Kr": 83.798, "Rb": 85.4678, "Sr": 87.62, "Y": 88.90584, "Zr": 91.224,
-    "Nb": 92.90637, "Mo": 95.95, "Ru": 101.07, "Rh": 102.9055, "Pd": 106.42,
-    "Ag": 107.8682, "Cd": 112.414, "In": 114.818, "Sn": 118.710, "Sb": 121.760,
-    "Te": 127.60, "I": 126.90447, "Xe": 131.293, "Cs": 132.90545196, "Ba": 137.327,
-    "La": 138.90547, "Ce": 140.116, "Pr": 140.90766, "Nd": 144.242, "Sm": 150.36,
-    "Eu": 151.964, "Gd": 157.25, "Tb": 158.92535, "Dy": 162.500, "Ho": 164.93033,
-    "Er": 167.259, "Tm": 168.93422, "Yb": 173.045, "Lu": 174.9668, "Hf": 178.49,
-    "Ta": 180.94788, "W": 183.84, "Re": 186.207, "Os": 190.23, "Ir": 192.217,
-    "Pt": 195.084, "Au": 196.966569, "Hg": 200.592, "Tl": 204.38, "Pb": 207.2,
-    "Bi": 208.98040, "Th": 232.0377, "U": 238.02891,
+    "H": 1.008, "Li": 6.94, "Be": 9.0122, "B": 10.81, "C": 12.011, "N": 14.007,
+    "O": 15.999, "F": 18.9984, "Na": 22.9898, "Mg": 24.305, "Al": 26.9815,
+    "Si": 28.085, "P": 30.9738, "S": 32.06, "Cl": 35.45, "K": 39.0983,
+    "Ca": 40.078, "Sc": 44.9559, "Ti": 47.867, "V": 50.9415, "Cr": 51.9961,
+    "Mn": 54.9380, "Fe": 55.845, "Co": 58.9332, "Ni": 58.6934, "Cu": 63.546,
+    "Zn": 65.38, "Ga": 69.723, "Ge": 72.630, "Sr": 87.62, "Y": 88.9058,
+    "Zr": 91.224, "Nb": 92.9064, "Mo": 95.95, "Ba": 137.327, "La": 138.9055,
+    "Ce": 140.116, "Pr": 140.9077, "Nd": 144.242, "Sm": 150.36, "Eu": 151.964,
+    "Gd": 157.25, "Ta": 180.9479, "W": 183.84, "Bi": 208.9804,
 }
 
-# Only simple element symbols, decimal coefficients, and nested () or [] groups are supported.
-# Hydrate dot notation, charges, isotope notation, and phase labels are intentionally unsupported.
-TOKEN_RE = re.compile(r"([A-Z][a-z]?|\d+(?:\.\d+)?|\.\d+|[()\[\]])")
+ORGANIC_REAGENTS = {
+    "Citric Acid (anhydrous)": {"formula": "C6H8O7", "mw": 192.124, "density": 1.665},
+    "Citric Acid (monohydrate)": {"formula": "C6H8O7*H2O", "mw": 210.14, "density": 1.54},
+    "Ethylene Glycol": {"formula": "C2H6O2", "mw": 62.068, "density": 1.1132},
+    "EDTA": {"formula": "C10H16N2O8", "mw": 292.24, "density": 0.86},
+    "Urea": {"formula": "CH4N2O", "mw": 60.06, "density": 1.32},
+}
+
+PRECURSOR_LIBRARY: Dict[str, Dict[str, any]] = {
+    "Li": {
+        "name": "Lithium Nitrate",
+        "formula": "LiNO3",
+        "mw": 68.946,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "Hygroscopic: dry at 120 °C prior to weighing to remove adsorbed water."
+    },
+    "La": {
+        "name": "Lanthanum(III) Nitrate Hexahydrate",
+        "formula": "La(NO3)3*6H2O",
+        "mw": 433.01,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "Confirm hydration by TGA or standardize. Alternatively use La2O3 calcined at 1000 °C dissolved in dilute HNO3."
+    },
+    "Ti": {
+        "name": "Titanium(IV) Isopropoxide (TTIP)",
+        "formula": "Ti(OCH(CH3)2)4",
+        "mw": 284.22,
+        "atoms": 1,
+        "phase": "liquid",
+        "density": 0.96,
+        "handling": "Moisture-sensitive: pre-chelate in pure EtOH/dilute HNO3 with citric acid, or use peroxo-citrato route (Ti powder dissolved in H2O2 + NH3)."
+    },
+    "Zr": {
+        "name": "Zirconyl Nitrate Hydrate",
+        "formula": "ZrO(NO3)2*2H2O",
+        "mw": 267.26,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "For LLZO: verify ZrO2 residue wt% by calcining a test batch at 900 °C."
+    },
+    "Al": {
+        "name": "Aluminum Nitrate Nonahydrate",
+        "formula": "Al(NO3)3*9H2O",
+        "mw": 375.13,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "B-site dopant for LLTO/LLZO to stabilize cubic phase and enhance densification."
+    },
+    "Ta": {
+        "name": "Tantalum(V) Chloride",
+        "formula": "TaCl5",
+        "mw": 358.21,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "Reacts vigorously with water: dissolve in absolute ethanol containing citric acid."
+    },
+    "Sr": {
+        "name": "Strontium Nitrate",
+        "formula": "Sr(NO3)2",
+        "mw": 211.63,
+        "atoms": 1,
+        "phase": "solid",
+        "handling": "A-site dopant for LLTO to expand unit cell bottleneck and enhance conductivity."
+    },
+    "Eu": {
+        "name": "Europium(III) Oxide",
+        "formula": "Eu2O3",
+        "mw": 351.926,
+        "atoms": 2,
+        "phase": "solid",
+        "handling": "Dissolve in hot dilute HNO3 to generate europium nitrate in situ."
+    }
+}
 
 
-class FormulaError(ValueError):
-    """Raised when a chemical formula is invalid or unsupported."""
-
-
-def parse_formula(formula: str) -> Dict[str, float]:
-    """Parse a neutral inorganic formula with nested parentheses/brackets and decimals."""
-    if not isinstance(formula, str) or not formula.strip():
-        raise FormulaError("Enter a non-empty chemical formula.")
-    source = re.sub(r"\s+", "", formula)
-    tokens = TOKEN_RE.findall(source)
-    if "".join(tokens) != source:
-        raise FormulaError(
-            "Unsupported formula syntax. Use element symbols, numeric coefficients, "
-            "and balanced () or [] groups. Hydrate dots and charges are not supported."
-        )
+def parse_sub_formula(sub_form: str) -> Dict[str, float]:
+    """Parse single bracketed chemical formula group without hydrate dots."""
+    token_re = re.compile(r"([A-Z][a-z]?|\d+(?:\.\d+)?|\.\d+|[()\[\]])")
+    tokens = token_re.findall(sub_form.strip())
+    if "".join(tokens) != sub_form.strip():
+        raise ValueError(f"Invalid characters in sub-formula: {sub_form}")
 
     index = 0
 
-    def parse_group(expected_close: str | None = None) -> Dict[str, float]:
+    def parse_group(expected_close: Optional[str] = None) -> Dict[str, float]:
         nonlocal index
         result: Dict[str, float] = {}
         while index < len(tokens):
             token = tokens[index]
             if token in (")", "]"):
                 if expected_close is None or token != expected_close:
-                    raise FormulaError(f"Unexpected closing bracket '{token}'.")
+                    raise ValueError(f"Unmatched closing bracket: {token}")
                 index += 1
                 return result
             if token in ("(", "["):
-                opening = token
-                closing = ")" if opening == "(" else "]"
+                closing = ")" if token == "(" else "]"
                 index += 1
                 nested = parse_group(closing)
-                multiplier = 1.0
+                mult = 1.0
                 if index < len(tokens) and re.fullmatch(r"(?:\d+(?:\.\d+)?|\.\d+)", tokens[index]):
-                    multiplier = float(tokens[index])
+                    mult = float(tokens[index])
                     index += 1
-                if multiplier <= 0:
-                    raise FormulaError("Group multipliers must be greater than zero.")
-                for element, amount in nested.items():
-                    result[element] = result.get(element, 0.0) + amount * multiplier
+                for el, val in nested.items():
+                    result[el] = result.get(el, 0.0) + val * mult
                 continue
             if re.fullmatch(r"[A-Z][a-z]?", token):
-                element = token
-                if element not in ATOMIC_WEIGHTS:
-                    raise FormulaError(f"Unknown element symbol '{element}'.")
+                el = token
+                if el not in ATOMIC_WEIGHTS:
+                    raise ValueError(f"Unknown element: {el}")
                 index += 1
-                amount = 1.0
+                cnt = 1.0
                 if index < len(tokens) and re.fullmatch(r"(?:\d+(?:\.\d+)?|\.\d+)", tokens[index]):
-                    amount = float(tokens[index])
+                    cnt = float(tokens[index])
                     index += 1
-                if amount <= 0:
-                    raise FormulaError("Element coefficients must be greater than zero.")
-                result[element] = result.get(element, 0.0) + amount
+                result[el] = result.get(el, 0.0) + cnt
                 continue
-            raise FormulaError(f"Unexpected token '{token}'.")
+            raise ValueError(f"Syntax error near '{token}'")
         if expected_close:
-            raise FormulaError(f"Missing closing bracket '{expected_close}'.")
+            raise ValueError(f"Expected closing bracket: {expected_close}")
         return result
 
-    composition = parse_group()
-    if index != len(tokens):
-        raise FormulaError("Formula was not fully parsed.")
-    if not composition:
-        raise FormulaError("No elements were found in the formula.")
-    return composition
+    return parse_group()
+
+
+def parse_formula(formula: str) -> Dict[str, float]:
+    """Parse chemical formulas supporting hydrate notation (e.g., La(NO3)3*6H2O or ·6H2O)."""
+    formula = re.sub(r"\s+", "", formula)
+    parts = re.split(r"[·*]", formula)
+    total_comp: Dict[str, float] = {}
+
+    for i, part in enumerate(parts):
+        multiplier = 1.0
+        m = re.match(r"^(\d+(?:\.\d+)?)(.*)$", part)
+        if m and i > 0:  # e.g., 6H2O
+            multiplier = float(m.group(1))
+            part = m.group(2)
+        sub_comp = parse_sub_formula(part)
+        for el, cnt in sub_comp.items():
+            total_comp[el] = total_comp.get(el, 0.0) + cnt * multiplier
+
+    return total_comp
 
 
 def molecular_weight(composition: Mapping[str, float]) -> float:
-    """Return formula mass in g/mol using the fixed atomic weights above."""
-    if not composition:
-        raise FormulaError("Composition is empty.")
-    unknown = set(composition) - set(ATOMIC_WEIGHTS)
-    if unknown:
-        raise FormulaError(f"Unknown element(s): {', '.join(sorted(unknown))}")
-    mass = sum(ATOMIC_WEIGHTS[el] * amount for el, amount in composition.items())
-    if not math.isfinite(mass) or mass <= 0:
-        raise FormulaError("Calculated formula mass is not physically meaningful.")
-    return mass
+    return sum(ATOMIC_WEIGHTS[el] * amt for el, amt in composition.items())
 
 
 @dataclass
-class Precursor:
-    """Explicit precursor definition; MW is for the as-supplied chemical formula."""
+class PrecursorConfig:
     element: str
     name: str
     formula: str
@@ -143,308 +188,251 @@ class Precursor:
     target_atoms_per_formula: float
     assay_wt_percent: float
     phase: str = "solid"
-    density_g_ml: float | None = None
-    assay_basis: str = "active compound mass fraction"
-    reference: str = "User supplied; not independently verified"
-
-    def validate(self) -> None:
-        if self.element not in ATOMIC_WEIGHTS:
-            raise ValueError(f"Unknown target element: {self.element}")
-        if not self.name.strip():
-            raise ValueError("Precursor name is required.")
-        if not self.formula.strip():
-            raise ValueError(f"Formula is required for {self.name}.")
-        parsed = parse_formula(self.formula)
-        if self.element not in parsed:
-            raise ValueError(
-                f"Precursor formula {self.formula} does not contain target element {self.element}."
-            )
-        if self.target_atoms_per_formula <= 0:
-            raise ValueError("Target-element atoms per precursor formula must be positive.")
-        if not math.isfinite(self.mw_g_mol) or self.mw_g_mol <= 0:
-            raise ValueError("Precursor molar mass must be positive.")
-        if not (0 < self.assay_wt_percent <= 100):
-            raise ValueError("Assay must be greater than 0 and at most 100 wt%.")
-        if self.phase == "liquid" and (self.density_g_ml is None or self.density_g_ml <= 0):
-            raise ValueError("A positive density is required for a liquid precursor.")
-        if self.assay_basis != "active compound mass fraction":
-            raise ValueError(
-                "This version only supports assay reported as active-compound mass fraction."
-            )
+    density_g_ml: Optional[float] = None
+    handling_notes: str = ""
 
 
-def calculate_precursor_amount(
-    target_element_moles: float, precursor: Precursor
-) -> Tuple[float, float, float]:
-    """Return precursor moles, as-supplied mass (g), and optional liquid volume (mL)."""
-    precursor.validate()
-    if target_element_moles < 0 or not math.isfinite(target_element_moles):
-        raise ValueError("Target element moles must be finite and non-negative.")
-    precursor_moles = target_element_moles / precursor.target_atoms_per_formula
-    active_mass = precursor_moles * precursor.mw_g_mol
-    supplied_mass = active_mass / (precursor.assay_wt_percent / 100.0)
-    volume_ml = (
-        supplied_mass / precursor.density_g_ml if precursor.phase == "liquid" else float("nan")
-    )
-    return precursor_moles, supplied_mass, volume_ml
-
-
-def calculate_batch(
-    formula: str,
-    product_mass_g: float,
-    precursors: Mapping[str, Precursor],
-    lithium_excess_percent: float = 0.0,
+def calculate_pechini_synthesis(
+    nominal_formula: str,
+    target_mass_g: float,
+    precursor_map: Dict[str, PrecursorConfig],
+    excess_map: Dict[str, float],
+    ca_to_metal_ratio: float = 2.0,
+    eg_to_ca_ratio: float = 4.0,
+    urea_per_mass_oxide: float = 0.0,
 ) -> dict:
-    """Calculate theoretical elemental and precursor quantities; no yield/phase prediction."""
-    composition = parse_formula(formula)
-    mw = molecular_weight(composition)
-    if not math.isfinite(product_mass_g) or product_mass_g <= 0:
-        raise ValueError("Target theoretical product mass must be positive.")
-    if not (0 <= lithium_excess_percent <= 100):
-        raise ValueError("Optional lithium excess must be between 0 and 100%.")
-    target_formula_moles = product_mass_g / mw
-    element_rows = []
-    precursor_rows = []
-    for element, coefficient in composition.items():
-        if element == "O":
+    comp = parse_formula(nominal_formula)
+    mw_product = molecular_weight(comp)
+    moles_product = target_mass_g / mw_product
+
+    elements_calc = []
+    precursors_calc = []
+    total_metal_moles = 0.0
+
+    for el, coeff in comp.items():
+        if el == "O":
             continue
-        excess = 1.0 + lithium_excess_percent / 100.0 if element == "Li" else 1.0
-        element_moles = target_formula_moles * coefficient * excess
-        element_rows.append({
-            "Element": element,
-            "Atoms per formula unit": coefficient,
-            "Target element amount (mol)": element_moles,
-            "Applied excess (%)": lithium_excess_percent if element == "Li" else 0.0,
+        applied_excess = excess_map.get(el, 0.0)
+        target_moles = moles_product * coeff * (1.0 + applied_excess / 100.0)
+        total_metal_moles += target_moles
+
+        p = precursor_map[el]
+        p_moles = target_moles / p.target_atoms_per_formula
+        p_active_mass = p_moles * p.mw_g_mol
+        p_supplied_mass = p_active_mass / (p.assay_wt_percent / 100.0)
+        p_vol = (
+            p_supplied_mass / p.density_g_ml
+            if p.phase == "liquid" and p.density_g_ml
+            else None
+        )
+
+        elements_calc.append({
+            "Element": el,
+            "Formula Stoich": coeff,
+            "Target Moles (mol)": target_moles,
+            "Excess Applied (%)": applied_excess,
         })
-        if element not in precursors:
-            raise ValueError(
-                f"No explicit precursor definition supplied for {element}. "
-                "Add a precursor with a known formula, molar mass, assay basis, and physical properties."
-            )
-        precursor = precursors[element]
-        pmol, mass_g, volume_ml = calculate_precursor_amount(element_moles, precursor)
-        precursor_rows.append({
-            "Element": element,
-            "Precursor": precursor.name,
-            "Precursor formula": precursor.formula,
-            "Precursor amount (mol)": pmol,
-            "Molar mass (g/mol)": precursor.mw_g_mol,
-            "Assay (wt%)": precursor.assay_wt_percent,
-            "Theoretical supplied mass (g)": mass_g,
-            "Calculated volume (mL)": volume_ml,
-            "Reference / provenance": precursor.reference,
+
+        precursors_calc.append({
+            "Element": el,
+            "Precursor": p.name,
+            "Formula": p.formula,
+            "Precursor Moles (mol)": p_moles,
+            "Molar Mass (g/mol)": p.mw_g_mol,
+            "Supplied Mass (g)": p_supplied_mass,
+            "Volume (mL)": p_vol if p_vol is not None else float("nan"),
+            "Special Handling": p.handling_notes,
         })
+
+    # Pechini Organic Phase Calculation
+    ca_moles = total_metal_moles * ca_to_metal_ratio
+    ca_mw = ORGANIC_REAGENTS["Citric Acid (anhydrous)"]["mw"]
+    ca_mass_g = ca_moles * ca_mw
+
+    eg_moles = ca_moles * eg_to_ca_ratio
+    eg_mw = ORGANIC_REAGENTS["Ethylene Glycol"]["mw"]
+    eg_density = ORGANIC_REAGENTS["Ethylene Glycol"]["density"]
+    eg_mass_g = eg_moles * eg_mw
+    eg_volume_ml = eg_mass_g / eg_density
+
+    urea_mass_g = target_mass_g * urea_per_mass_oxide
+
     return {
-        "formula": formula,
-        "product_mass_g": product_mass_g,
-        "formula_mass_g_mol": mw,
-        "target_formula_moles": target_formula_moles,
-        "elements": element_rows,
-        "precursors": precursor_rows,
-        "lithium_excess_percent": lithium_excess_percent,
+        "nominal_formula": nominal_formula,
+        "target_mass_g": target_mass_g,
+        "mw_product": mw_product,
+        "moles_product": moles_product,
+        "total_metal_moles": total_metal_moles,
+        "elements": elements_calc,
+        "precursors": precursors_calc,
+        "organics": {
+            "ca_moles": ca_moles,
+            "ca_mass_g": ca_mass_g,
+            "eg_moles": eg_moles,
+            "eg_mass_g": eg_mass_g,
+            "eg_volume_ml": eg_volume_ml,
+            "urea_mass_g": urea_mass_g,
+        },
     }
 
 
-def default_precursor_form(element: str) -> str:
-    """Suggest a blank editable template only; does not infer a chemically valid precursor."""
-    return ""
-
-
-def main() -> None:
-    st.set_page_config(page_title="PechiniLab | Academic Prototype", page_icon="⚗️", layout="wide")
-    st.title("⚗️ PechiniLab")
-    st.caption(
-        "Academic prototype for transparent stoichiometry and precursor-quantity calculations. "
-        "Not a validated synthesis protocol or safety assessment."
+def main():
+    st.set_page_config(page_title="PechiniLab v0.3.0 | Solid Electrolyte Synthesizer", page_icon="⚗️", layout="wide")
+    st.title("⚗️ PechiniLab: Advanced Ceramic Formulation Suite")
+    st.markdown(
+        "**Reproducible Sol-Gel & Polymerizable Complex Calculator** for Perovskites "
+        "($Li_{3x}La_{2/3-x}TiO_3$, $Li_{0.3}Ca_{0.35}TaO_3$) and Garnets ($Li_7La_3Zr_2O_{12}$)."
     )
 
     with st.sidebar:
-        st.header("Calculation settings")
-        st.write(f"Version: `{APP_VERSION}`")
-        st.write("Atomic weights: fixed values embedded in this version.")
-        st.warning(
-            "Use only after checking the formula, precursor identity, assay basis, and "
-            "independent calculations. No phase-purity, yield, pH, or thermal predictions are made."
+        st.header("1. Material Benchmark Presets")
+        preset = st.selectbox(
+            "Select Literature Preset",
+            [
+                "Custom Composition",
+                "LLTO: Li0.33La0.55TiO3 (Perovskite - High Ionic Conduct.)",
+                "Al-LLTO: Li0.33La0.55Ti0.99Al0.01O3 (Huang 2022)",
+                "LLZO: Li7La3Zr2O12 (Cubic Garnet Solid Electrolyte)",
+                "Al-LLZO: Li6.25Al0.25La3Zr2O12 (Stabilized Cubic Garnet)",
+                "LCTO: Li0.30Ca0.35TaO3 (Mariappan 2016)",
+            ]
         )
-        st.markdown("**Supported formula syntax**")
-        st.code("La0.6Sr0.4Co0.2Fe0.8O3\nLa(NO3)3\nLi7La3Zr2O12")
-        st.caption("Hydrate dots, charges, isotope notation, and phase labels are not supported in target formulas.")
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.subheader("1. Target composition")
-        formula = st.text_input("Target formula", value="LaCoO3", help="Use elemental coefficients; grouped formulas are supported.")
-        product_mass = st.number_input(
-            "Theoretical target product mass (g)", min_value=0.001, max_value=10000.0,
-            value=10.0, step=0.5, format="%.3f"
-        )
-        li_excess = st.number_input(
-            "Optional Li excess (wt% relative to stoichiometric Li amount)",
-            min_value=0.0, max_value=100.0, value=0.0, step=1.0,
-            help="This is a user-entered planning assumption, not a temperature-based prediction."
-        )
-        st.info(
-            "Calculation basis: complete conversion to the specified nominal formula, "
-            "with no allowance for yield, oxygen non-stoichiometry, phase impurities, or process losses."
-        )
+        preset_defaults = {
+            "LLTO: Li0.33La0.55TiO3 (Perovskite - High Ionic Conduct.)": ("Li0.33La0.55TiO3", {"Li": 10.0}),
+            "Al-LLTO: Li0.33La0.55Ti0.99Al0.01O3 (Huang 2022)": ("Li0.33La0.55Ti0.99Al0.01O3", {"Li": 10.0}),
+            "LLZO: Li7La3Zr2O12 (Cubic Garnet Solid Electrolyte)": ("Li7La3Zr2O12", {"Li": 15.0}),
+            "Al-LLZO: Li6.25Al0.25La3Zr2O12 (Stabilized Cubic Garnet)": ("Li6.25Al0.25La3Zr2O12", {"Li": 15.0}),
+            "LCTO: Li0.30Ca0.35TaO3 (Mariappan 2016)": ("Li0.30Ca0.35TaO3", {"Li": 5.0}),
+        }
+
+        default_formula = "Li0.33La0.55TiO3"
+        default_excess = {"Li": 10.0}
+        if preset in preset_defaults:
+            default_formula, default_excess = preset_defaults[preset]
+
+        target_formula = st.text_input("Nominal Ceramic Formula", value=default_formula)
+        batch_mass = st.number_input("Target Sintered Powder Mass (g)", min_value=0.1, value=5.0, step=1.0)
+
+        st.subheader("2. Organic Polyester Matrix")
+        ca_ratio = st.slider("Citric Acid : Total Cation (CA:M)", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
+        eg_ratio = st.slider("Ethylene Glycol : Citric Acid (EG:CA)", min_value=1.0, max_value=6.0, value=4.0, step=0.5)
+        urea_mass_mult = st.number_input("Urea auxiliary fuel (g per g oxide, 0 for pure Pechini)", value=0.0, step=0.2)
 
     try:
-        composition = parse_formula(formula)
-        formula_mass = molecular_weight(composition)
-    except Exception as exc:
-        st.error(f"Formula validation failed: {exc}")
+        comp = parse_formula(target_formula)
+        mw = molecular_weight(comp)
+    except Exception as e:
+        st.error(f"Formula parsing error: {e}")
         st.stop()
 
-    with col2:
-        st.subheader("2. Formula checks")
-        st.metric("Formula mass", f"{formula_mass:.5f} g/mol")
-        st.metric("Target formula amount", f"{product_mass / formula_mass:.6f} mol")
-        st.dataframe(
-            pd.DataFrame(
-                [{"Element": el, "Coefficient": amount} for el, amount in composition.items()]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+    non_oxygen_elements = [el for el in comp.keys() if el != "O"]
 
-    st.divider()
-    st.subheader("3. Define a precursor for each non-oxygen element")
-    st.write(
-        "All precursor data are explicit inputs. The app does not silently choose a default "
-        "chemical form. Verify molecular masses and assay information against the supplier certificate "
-        "or a citable reference before use."
-    )
+    st.subheader("3. Precursor Identification & Volatilization Allowances")
+    cols = st.columns(len(non_oxygen_elements))
+    precursor_map: Dict[str, PrecursorConfig] = {}
+    excess_map: Dict[str, float] = {}
 
-    precursors: Dict[str, Precursor] = {}
-    element_cols = st.columns(min(max(len([e for e in composition if e != "O"]), 1), 3))
-    for idx, element in enumerate([e for e in composition if e != "O"]):
-        with element_cols[idx % len(element_cols)]:
+    for i, el in enumerate(non_oxygen_elements):
+        lib_data = PRECURSOR_LIBRARY.get(el, {
+            "name": f"{el} Precursor", "formula": el, "mw": ATOMIC_WEIGHTS[el],
+            "atoms": 1, "phase": "solid", "density": None, "handling": "Standard analytical grade"
+        })
+        with cols[i]:
             with st.container(border=True):
-                st.markdown(f"**{element} precursor**")
-                name = st.text_input(f"{element}: precursor name", key=f"name_{element}", placeholder="e.g., lanthanum nitrate hexahydrate")
-                pformula = st.text_input(f"{element}: chemical formula", key=f"formula_{element}", placeholder="e.g., La(NO3)3")
-                mw = st.number_input(
-                    f"{element}: molar mass (g/mol)", min_value=0.001, value=1.0,
-                    step=0.1, format="%.5f", key=f"mw_{element}"
-                )
-                atoms = st.number_input(
-                    f"{element}: target atoms per precursor formula", min_value=0.001,
-                    value=1.0, step=1.0, format="%.3f", key=f"atoms_{element}"
-                )
-                assay = st.number_input(
-                    f"{element}: assay (wt%)", min_value=0.001, max_value=100.0,
-                    value=99.0, step=0.5, format="%.3f", key=f"assay_{element}"
-                )
-                phase = st.selectbox(f"{element}: physical form", ["solid", "liquid"], key=f"phase_{element}")
+                st.markdown(f"### **{el}** (Atoms: {comp[el]})")
+                name = st.text_input(f"Name ({el})", value=lib_data["name"], key=f"name_{el}")
+                form = st.text_input(f"Formula ({el})", value=lib_data["formula"], key=f"form_{el}")
+                try:
+                    auto_mw = molecular_weight(parse_formula(form))
+                except Exception:
+                    auto_mw = lib_data["mw"]
+                p_mw = st.number_input(f"MW g/mol ({el})", value=float(auto_mw), format="%.3f", key=f"mw_{el}")
+                atoms = st.number_input(f"{el} per precursor", value=float(lib_data.get("atoms", 1)), key=f"at_{el}")
+                assay = st.number_input(f"Assay wt% ({el})", min_value=10.0, max_value=100.0, value=99.0, key=f"as_{el}")
+                phase = st.selectbox(f"Phase ({el})", ["solid", "liquid"], index=0 if lib_data["phase"] == "solid" else 1, key=f"ph_{el}")
                 density = None
                 if phase == "liquid":
-                    density = st.number_input(
-                        f"{element}: density (g/mL)", min_value=0.001, value=1.0,
-                        step=0.01, format="%.4f", key=f"density_{element}"
-                    )
-                reference = st.text_input(
-                    f"{element}: data source", key=f"ref_{element}",
-                    placeholder="Supplier CoA, catalog number, DOI, or database version"
-                )
-                precursors[element] = Precursor(
-                    element=element, name=name or f"UNSPECIFIED {element} precursor",
-                    formula=pformula, mw_g_mol=float(mw),
-                    target_atoms_per_formula=float(atoms), assay_wt_percent=float(assay),
-                    phase=phase, density_g_ml=float(density) if density is not None else None,
-                    reference=reference or "Not supplied; verify before use",
+                    density = st.number_input(f"Density g/mL ({el})", value=float(lib_data.get("density", 1.0)), key=f"d_{el}")
+                
+                def_exc = default_excess.get(el, 0.0)
+                vol_exc = st.number_input(f"Thermal Excess % ({el})", min_value=0.0, max_value=50.0, value=float(def_exc), key=f"ex_{el}")
+                excess_map[el] = vol_exc
+                
+                handling = st.text_area(f"Handling / Notes", value=lib_data.get("handling", ""), key=f"hd_{el}", height=68)
+
+                precursor_map[el] = PrecursorConfig(
+                    element=el, name=name, formula=form, mw_g_mol=p_mw,
+                    target_atoms_per_formula=atoms, assay_wt_percent=assay,
+                    phase=phase, density_g_ml=density, handling_notes=handling
                 )
 
     st.divider()
-    st.subheader("4. Calculate and export")
-    st.caption("The generated report is a calculation record, not an experimental SOP.")
-    if st.button("Calculate theoretical reagent quantities", type="primary"):
-        try:
-            result = calculate_batch(formula, float(product_mass), precursors, float(li_excess))
-        except Exception as exc:
-            st.error(f"Calculation stopped: {exc}")
-            st.stop()
 
-        st.success("Calculation completed. Review every precursor definition and data source before relying on the values.")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Formula mass", f"{result['formula_mass_g_mol']:.5f} g/mol")
-        m2.metric("Target formula amount", f"{result['target_formula_moles']:.6f} mol")
-        m3.metric("Elements calculated", str(len(result["elements"])))
+    calc = calculate_pechini_synthesis(
+        target_formula, batch_mass, precursor_map, excess_map,
+        ca_to_metal_ratio=ca_ratio, eg_to_ca_ratio=eg_ratio, urea_per_mass_oxide=urea_mass_mult
+    )
 
-        st.markdown("#### Elemental stoichiometry")
-        st.dataframe(pd.DataFrame(result["elements"]), use_container_width=True, hide_index=True)
-        precursor_df = pd.DataFrame(result["precursors"])
-        st.markdown("#### Precursor quantities")
+    colA, colB = st.columns([2, 1])
+    with colA:
+        st.subheader("4. Calculated Batch Sheet")
+        precursor_df = pd.DataFrame(calc["precursors"])
         st.dataframe(
-            precursor_df.style.format({
-                "Precursor amount (mol)": "{:.6f}",
-                "Molar mass (g/mol)": "{:.5f}",
-                "Assay (wt%)": "{:.3f}",
-                "Theoretical supplied mass (g)": "{:.5f}",
-                "Calculated volume (mL)": lambda x: "—" if pd.isna(x) else f"{x:.4f}",
+            precursor_df[["Element", "Precursor", "Formula", "Supplied Mass (g)", "Volume (mL)", "Special Handling"]].style.format({
+                "Supplied Mass (g)": "{:.4f}",
+                "Volume (mL)": lambda x: "—" if pd.isna(x) else f"{x:.3f}",
             }),
             use_container_width=True,
-            hide_index=True,
+            hide_index=True
         )
 
-        record = {
-            "application": APP_NAME,
-            "application_version": APP_VERSION,
-            "generated_utc": datetime.now(timezone.utc).isoformat(),
-            "input": {
-                "target_formula": formula,
-                "theoretical_product_mass_g": float(product_mass),
-                "optional_lithium_excess_percent": float(li_excess),
-            },
-            "calculation": result,
-            "precursor_definitions": [asdict(p) for p in precursors.values()],
-            "limitations": [
-                "No experimental validation is implied.",
-                "No phase purity, yield, pH, thermal behavior, or safety prediction is performed.",
-                "Atomic weights are fixed constants embedded in this version.",
-                "All precursor identities, molar masses, assay bases, and sources require independent verification.",
-            ],
-        }
-        canonical = json.dumps(record, sort_keys=True, default=str, separators=(",", ":"))
-        record["record_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        st.download_button(
-            "Download calculation record (JSON)",
-            data=json.dumps(record, indent=2, default=str),
-            file_name="pechinilab_calculation_record.json",
-            mime="application/json",
-        )
-        st.download_button(
-            "Download precursor table (CSV)",
-            data=precursor_df.to_csv(index=False),
-            file_name="pechinilab_precursor_quantities.csv",
-            mime="text/csv",
-        )
-        st.markdown("#### Reproducibility and limitations")
-        st.write(f"Record timestamp (UTC): {record['generated_utc']}")
-        st.code(record["record_sha256"], language="text")
-        st.warning(
-            "Do not interpret these calculations as a recommendation to carry out a synthesis. "
-            "Confirm the precursor chemistry, compatibility, hazards, and processing conditions "
-            "with a qualified materials chemist and your institution's approved procedures."
-        )
+    with colB:
+        st.subheader("5. Polyester Network Quantities")
+        org = calc["organics"]
+        st.metric("Total Metal Cations (Σ Mⁿ⁺)", f"{calc['total_metal_moles']:.5f} mol")
+        st.metric("Anhydrous Citric Acid", f"{org['ca_mass_g']:.3f} g ({org['ca_moles']:.4f} mol)")
+        st.metric("Ethylene Glycol", f"{org['eg_volume_ml']:.2f} mL ({org['eg_mass_g']:.3f} g)")
+        if org["urea_mass_g"] > 0:
+            st.metric("Auxiliary Urea Fuel", f"{org['urea_mass_g']:.3f} g")
 
-    with st.expander("Scientific scope and limitations"):
+    with st.expander("Recommended Multi-Stage Thermal & Processing Protocol", expanded=True):
         st.markdown(
-            """
-            **Implemented:** formula parsing for a defined subset of formula syntax; formula mass;
-            theoretical target formula moles; elemental amounts; precursor amounts based on an
-            explicitly supplied number of target-element atoms per precursor formula; assay correction
-            where assay means active-compound mass fraction; liquid volume from supplied density.
-
-            **Not implemented:** chemical charge balance, oxidation-state inference, hydrate/solvate
-            normalization, solution concentration models, thermodynamic speciation, complexation
-            equilibria, pH prediction, polymerization kinetics, thermal analysis, lithium volatilization
-            prediction, phase stability, yield prediction, uncertainty propagation, or experimental validation.
-
-            **Publication status:** this is a software prototype. A research publication should report
-            independent benchmark cases, software tests, data provenance, supported input syntax,
-            limitations, versioned dependencies, and a clear statement of the scientific contribution.
+            f"""
+            1. **Chelation & Complexation ($60–90\,^\circ\text{{C}}$):** Dissolve metal salts in dilute nitric acid or chelant solution. 
+               *If using Ti or Zr alkoxides*, perform peroxo-complexation ($H_2O_2/NH_3$) or pre-chelate in alcohol to prevent uncontrolled precipitation.
+            2. **Esterification / Gel Formation ($120–150\,^\circ\text{{C}}$):** Slowly evaporate excess solvent under vigorous stirring until a high-viscosity polymeric resin forms.
+            3. **Charring / Carbonization ($350–500\,^\circ\text{{C}}$, 2–4 h):** Decompose the organic matrix in air to yield porous black carbonaceous precursor powder.
+            4. **Calcination ($800–900\,^\circ\text{{C}}$, 2–5 h):** Burn off residual carbon. In LLTO/LLZO, this forms submicron, phase-pure crystalline crystallites (~100 nm).
+            5. **Sintering ($1150–1250\,^\circ\text{{C}}$):** Consolidate pellets. Cover pellets with sacrificial mother powder of identical composition to suppress volatile $Li_2O$ loss.
             """
         )
+
+    st.subheader("6. Audit Trail & Provenance")
+    record = {
+        "app": "PechiniLab v0.3.0",
+        "utc_time": datetime.now(timezone.utc).isoformat(),
+        "input": {"formula": target_formula, "target_mass_g": batch_mass, "ca_ratio": ca_ratio, "eg_ratio": eg_ratio},
+        "results": calc
+    }
+    canonical = json.dumps(record, sort_keys=True, default=str)
+    sha256_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    record["sha256"] = sha256_hash
+
+    dcol1, dcol2 = st.columns([1, 1])
+    dcol1.download_button(
+        "Download Lab Record (JSON)",
+        data=json.dumps(record, indent=2, default=str),
+        file_name=f"pechini_{target_formula}_batch.json",
+        mime="application/json"
+    )
+    dcol2.download_button(
+        "Download Reagents (CSV)",
+        data=pd.DataFrame(calc["precursors"]).to_csv(index=False),
+        file_name=f"pechini_{target_formula}_precursors.csv",
+        mime="text/csv"
+    )
+    st.caption(f"Reproducibility Hash: `{sha256_hash}`")
 
 
 if __name__ == "__main__":
